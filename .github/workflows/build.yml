@@ -1,0 +1,83 @@
+name: Build Mi Band 10 RPK and Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-both-apps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unpack project archive (if uploaded as ZIP from phone)
+        run: |
+          if [ -f "miband10_full_repo.zip" ] && [ ! -d "watch-app" ]; then
+            unzip -o miband10_full_repo.zip
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate Shared Keystore & PEM Certificates
+        run: |
+          keytool -genkeypair -v \
+            -keystore shared.jks \
+            -storetype JKS \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -alias mibandkey \
+            -storepass miband123 \
+            -keypass miband123 \
+            -dname "CN=MiBandPhoto, OU=Dev, O=User, L=City, S=State, C=RU"
+
+          keytool -importkeystore \
+            -srckeystore shared.jks \
+            -destkeystore shared.p12 \
+            -srcstoretype jks \
+            -deststoretype pkcs12 \
+            -srcstorepass miband123 \
+            -deststorepass miband123
+
+          openssl pkcs12 -nodes -in shared.p12 -out shared.pem -passin pass:miband123
+          mkdir -p watch-app/sign/debug watch-app/sign/release
+          sed -n '/-----BEGIN PRIVATE KEY-----/,/-----END PRIVATE KEY-----/p' shared.pem > watch-app/sign/debug/private.pem
+          sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' shared.pem > watch-app/sign/debug/certificate.pem
+          cp watch-app/sign/debug/*.pem watch-app/sign/release/
+
+      - name: Build Xiaomi Vela Watch App (.rpk)
+        working-directory: ./watch-app
+        run: |
+          npm install -g hap-toolkit
+          hap build
+          hap release || true
+
+      - name: Build & Sign Android Companion App (.apk)
+        working-directory: ./android-app
+        run: |
+          gradle assembleRelease
+
+      - name: Upload Ready-to-Install RPK and APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiBand10-Photo-Apps
+          path: |
+            watch-app/dist/*.rpk
+            android-app/app/build/outputs/apk/release/*.apk
